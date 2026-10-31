@@ -1,8 +1,9 @@
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from accounting.balance_sheet import balance_sheet
+from accounting.reconciliation import party_balance_reconciliation
 from accounting.trial_balance import trial_balance_rows
-from database.models import Account, JournalEntry, JournalLine
+from database.models import Account, Customer, JournalEntry, JournalLine, Supplier
 from inventory.stock_manager import stock_value
 from tests.support import DatabaseTestCase
 
@@ -40,3 +41,37 @@ class AccountingTests(DatabaseTestCase):
         self.assertEqual(
             debit - credit, stock_value(self.db, self.business.id)
         )
+
+    def test_party_reconciliation_query_count_does_not_scale_with_parties(self):
+        self.db.add_all(
+            [
+                Customer(
+                    business_id=self.business.id,
+                    name=f"Reconciliation customer {index}",
+                )
+                for index in range(5)
+            ]
+            + [
+                Supplier(
+                    business_id=self.business.id,
+                    name=f"Reconciliation supplier {index}",
+                )
+                for index in range(5)
+            ]
+        )
+        self.db.flush()
+        selects = []
+
+        def capture_select(_connection, _cursor, statement, _parameters, _context, _many):
+            if statement.lstrip().upper().startswith("SELECT"):
+                selects.append(statement)
+
+        event.listen(self.engine, "before_cursor_execute", capture_select)
+        try:
+            result = party_balance_reconciliation(self.db, self.business.id)
+        finally:
+            event.remove(self.engine, "before_cursor_execute", capture_select)
+
+        self.assertEqual(len(selects), 7)
+        self.assertTrue(result["customers_match"])
+        self.assertTrue(result["suppliers_match"])

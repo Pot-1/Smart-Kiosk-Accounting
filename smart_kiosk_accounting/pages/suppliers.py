@@ -2,7 +2,12 @@ import streamlit as st
 from sqlalchemy import select
 
 from database.models import Supplier, Transaction
-from pages.common import current_business_id, session
+from pages.common import (
+    action_idempotency_key,
+    current_business_id,
+    rotate_action_idempotency_key,
+    session,
+)
 from transactions.service import _party_balance, record_supplier_payment
 from utils.currency import format_naira, to_kobo
 
@@ -12,6 +17,7 @@ def render():
     st.caption("Track what you owe suppliers and record the payments you make.")
     db = session()
     try:
+        payment_key = action_idempotency_key("supplier_payment")
         suppliers = list(db.scalars(
             select(Supplier).where(Supplier.business_id == current_business_id())
             .order_by(Supplier.name)
@@ -64,26 +70,30 @@ def render():
             if submitted:
                 try:
                     result = record_supplier_payment(
-                        db, current_business_id(), name, to_kobo(amount), method
+                        db, current_business_id(), name, to_kobo(amount), method,
+                        idempotency_key=payment_key,
                     )
                     db.commit()
+                    rotate_action_idempotency_key("supplier_payment")
                     st.success(f"Payment recorded: {result.reference}")
                     st.rerun()
                 except ValueError as exc:
                     db.rollback()
+                    rotate_action_idempotency_key("supplier_payment")
                     st.error(str(exc))
         st.subheader("Credit purchases")
         purchases = db.scalars(
             select(Transaction).where(
                 Transaction.business_id == current_business_id(),
                 Transaction.transaction_type == "purchase",
-                Transaction.payment_method == "credit",
+                Transaction.credit_amount_kobo > 0,
+                Transaction.status == "posted",
             ).order_by(Transaction.transaction_date.desc())
         )
         st.dataframe(
             [{"Date": row.transaction_date.strftime("%Y-%m-%d"),
               "Supplier": row.counterparty_name, "Reference": row.reference,
-              "Amount": format_naira(row.total_kobo, kobo=True)} for row in purchases],
+              "Amount": format_naira(row.credit_amount_kobo, kobo=True)} for row in purchases],
             width="stretch", hide_index=True,
         )
     finally:

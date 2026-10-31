@@ -75,6 +75,7 @@ def _render_dashboard(session, business_id):
         select(Transaction).where(
             Transaction.business_id == business_id,
             Transaction.transaction_type.in_(("sale", "sales_return", "expense")),
+            Transaction.status == "posted",
         ).order_by(Transaction.transaction_date)
     ))
     if transactions:

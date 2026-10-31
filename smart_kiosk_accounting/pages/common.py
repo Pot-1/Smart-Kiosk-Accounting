@@ -1,14 +1,38 @@
+from uuid import uuid4
+
 import pandas as pd
 import streamlit as st
 from sqlalchemy import select
 
 from database.database import SessionLocal
-from database.models import Product, ReceiptAttachment, Transaction
+from database.models import (
+    BusinessMembership,
+    Product,
+    ReceiptAttachment,
+    Transaction,
+    User,
+)
+from inventory.stock_manager import stock_totals_by_product
 from utils.currency import format_naira
 
 
 def current_business_id():
-    return int(st.session_state.get("business_id", 1))
+    user_id = st.session_state.get("user_id")
+    business_id = st.session_state.get("business_id")
+    if not isinstance(user_id, int) or not isinstance(business_id, int):
+        raise PermissionError("An authenticated business context is required.")
+    return business_id
+
+
+def action_idempotency_key(action):
+    state_key = f"transaction_key_{action}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = uuid4().hex
+    return st.session_state[state_key]
+
+
+def rotate_action_idempotency_key(action):
+    st.session_state[f"transaction_key_{action}"] = uuid4().hex
 
 
 def active_products(session):
@@ -54,11 +78,12 @@ def transactions_frame(session, business_id=None):
 
 
 def product_stock_frame(session):
-    from inventory.stock_manager import stock_quantity, stock_value
+    business_id = current_business_id()
+    stock_totals = stock_totals_by_product(session, business_id)
 
     rows = []
     for product in active_products(session):
-        on_hand = stock_quantity(session, product.id)
+        on_hand, value = stock_totals.get(product.id, (0, 0))
         rows.append({
             "SKU": product.sku,
             "Product": product.name,
@@ -66,9 +91,7 @@ def product_stock_frame(session):
             "Unit": product.unit,
             "Selling price": format_naira(product.selling_price_kobo, kobo=True),
             "Reorder at": product.reorder_level,
-            "Stock value": format_naira(
-                stock_value(session, current_business_id(), product.id), kobo=True
-            ),
+            "Stock value": format_naira(value, kobo=True),
             "Status": "Restock" if on_hand <= product.reorder_level else "In stock",
         })
     return pd.DataFrame(rows)
@@ -108,4 +131,24 @@ def run_action(action, success_message):
 
 
 def session():
-    return SessionLocal()
+    user_id = st.session_state.get("user_id")
+    business_id = current_business_id()
+    if not isinstance(user_id, int):
+        raise PermissionError("An authenticated business membership is required.")
+    db = SessionLocal()
+    db.info.update(
+        tenant_user_id=user_id,
+        tenant_business_id=business_id,
+    )
+    membership = db.scalar(
+        select(BusinessMembership.id).where(
+            BusinessMembership.user_id == user_id,
+            BusinessMembership.business_id == business_id,
+            BusinessMembership.is_active.is_(True),
+        )
+    )
+    user = db.get(User, user_id)
+    if membership is None or user is None or not user.is_active:
+        db.close()
+        raise PermissionError("You are not a member of the active business.")
+    return db

@@ -1,15 +1,23 @@
 from contextlib import contextmanager
+from pathlib import Path
 
-from sqlalchemy import create_engine, event, inspect, text
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from config import DATABASE_URL
-from database.models import Base
+from config import DATABASE_URL, DEMO_MODE
+from database.tenant import TenantSession
 
 
 _connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=_connect_args, future=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+SessionLocal = sessionmaker(
+    bind=engine,
+    class_=TenantSession,
+    autoflush=False,
+    expire_on_commit=False,
+)
 
 
 if DATABASE_URL.startswith("sqlite"):
@@ -21,23 +29,20 @@ if DATABASE_URL.startswith("sqlite"):
 
 
 def initialize_database():
-    Base.metadata.create_all(engine)
-    adjustment_columns = {
-        column["name"] for column in inspect(engine).get_columns("stock_adjustments")
-    }
-    if "total_cost_kobo" not in adjustment_columns:
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    "ALTER TABLE stock_adjustments "
-                    "ADD COLUMN total_cost_kobo INTEGER NOT NULL DEFAULT 0"
-                )
-            )
-    from database.seed_data import seed_demo_business
+    alembic_config = Config(
+        str(Path(__file__).resolve().parents[1] / "alembic.ini")
+    )
+    alembic_config.set_main_option("sqlalchemy.url", DATABASE_URL.replace("%", "%%"))
+    command.upgrade(alembic_config, "head")
+    from database.backups import start_backup_scheduler
 
-    with SessionLocal() as session:
-        seed_demo_business(session)
-        session.commit()
+    start_backup_scheduler()
+    if DEMO_MODE:
+        from database.seed_data import seed_demo_business
+
+        with SessionLocal() as session:
+            seed_demo_business(session)
+            session.commit()
 
 
 @contextmanager

@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from accounting.chart_of_accounts import DEFAULT_ACCOUNTS
 from accounting.journal_engine import post_journal
-from config import DEFAULT_BUSINESS_NAME, INVENTORY_METHOD
+from config import DEFAULT_BUSINESS_NAME, DEMO_MODE, INVENTORY_METHOD
 from database.models import (
     Account,
     Business,
@@ -15,6 +15,7 @@ from database.models import (
     Transaction,
     User,
 )
+from database.tenant import tenant_system_operation
 from transactions.service import (
     record_customer_payment,
     record_purchase,
@@ -24,14 +25,33 @@ from transactions.service import (
 )
 from utils.authentication import hash_password
 from utils.helpers import lagos_now
+from utils.authorization import seed_role_permissions
 
 
 def seed_demo_business(session):
+    if not DEMO_MODE:
+        raise RuntimeError("Demo data can only be seeded when SKA_DEMO_MODE is enabled.")
+    with tenant_system_operation(session):
+        return _seed_demo_business(session)
+
+
+def _seed_demo_business(session):
     business = session.scalar(select(Business).order_by(Business.id).limit(1))
     if business is not None:
         return
-    method = INVENTORY_METHOD if INVENTORY_METHOD in {"FIFO", "LIFO", "WEIGHTED_AVERAGE"} else "FIFO"
-    business = Business(name=DEFAULT_BUSINESS_NAME, inventory_method=method)
+    method = (
+        INVENTORY_METHOD
+        if INVENTORY_METHOD in {"FIFO", "WEIGHTED_AVERAGE"}
+        else "FIFO"
+    )
+    business = Business(
+        name=DEFAULT_BUSINESS_NAME,
+        inventory_method=method,
+        business_type="Frozen foods",
+        legal_structure="Sole proprietorship",
+        onboarding_step=8,
+        onboarding_complete=True,
+    )
     session.add(business)
     session.flush()
     accounts = {
@@ -63,9 +83,23 @@ def seed_demo_business(session):
         business_id=business.id,
         username=os.getenv("SKA_ADMIN_USERNAME", "admin"),
         password_hash=hash_password(os.getenv("SKA_ADMIN_PASSWORD", "kiosk1234")),
+        full_name="Demo Administrator",
+        email=os.getenv("SKA_ADMIN_EMAIL", "admin@example.invalid"),
     )
     session.add_all([product, user])
     session.flush()
+    from database.models import RoleAssignment
+
+    business.created_by_user_id = user.id
+    session.add(
+        RoleAssignment(
+            user_id=user.id,
+            business_id=business.id,
+            username=user.username,
+            role="OWNER",
+        )
+    )
+    seed_role_permissions(session, business.id)
 
     opening = Transaction(
         business_id=business.id,

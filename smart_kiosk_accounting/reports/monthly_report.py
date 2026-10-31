@@ -15,6 +15,7 @@ def monthly_totals(session, business_id: int, year: int, month: int):
                 select(func.coalesce(func.sum(Transaction.total_kobo), 0)).where(
                     Transaction.business_id == business_id,
                     Transaction.transaction_type == kind,
+                    Transaction.status == "posted",
                     Transaction.transaction_date >= start,
                     Transaction.transaction_date < end,
                 )

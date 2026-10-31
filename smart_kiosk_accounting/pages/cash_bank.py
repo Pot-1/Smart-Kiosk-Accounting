@@ -3,8 +3,13 @@ import pandas as pd
 from sqlalchemy import func, select
 
 from database.models import Account, BankStatement, JournalLine
-from pages.common import current_business_id, transactions_frame
-from pages.common import session
+from pages.common import (
+    action_idempotency_key,
+    current_business_id,
+    rotate_action_idempotency_key,
+    session,
+    transactions_frame,
+)
 from reports.bank_reconciliation import bank_match_candidates, import_bank_rows
 from transactions.service import record_owner_funds
 from utils.currency import format_naira, to_kobo
@@ -36,6 +41,7 @@ def render():
         left.metric("Cash in shop", format_naira(_balance(db, "1010"), kobo=True))
         right.metric("Bank and POS", format_naira(_balance(db, "1020"), kobo=True))
         with st.expander("Record owner money in or out"):
+            owner_funds_key = action_idempotency_key("owner_funds")
             with st.form("owner_funds"):
                 direction = st.selectbox("Transaction", ["capital", "drawing"],
                                          format_func=lambda x: "Owner adds money" if x == "capital" else "Owner takes money")
@@ -47,8 +53,10 @@ def render():
                 try:
                     result = record_owner_funds(
                         db, current_business_id(), to_kobo(amount), direction, method, note
+                        , idempotency_key=owner_funds_key
                     )
                     db.commit()
+                    rotate_action_idempotency_key("owner_funds")
                     st.success(f"Saved: {result.reference}")
                     st.rerun()
                 except ValueError as exc:

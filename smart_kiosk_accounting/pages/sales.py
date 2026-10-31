@@ -2,8 +2,16 @@ import streamlit as st
 from sqlalchemy import select
 
 from database.models import Product, Transaction, TransactionItem
-from pages.common import active_products, current_business_id, session, show_receipt_gallery
+from pages.common import (
+    action_idempotency_key,
+    active_products,
+    current_business_id,
+    rotate_action_idempotency_key,
+    session,
+    show_receipt_gallery,
+)
 from reports.pdf_export import create_pdf_report
+from inventory.stock_manager import WEIGHT_UNITS
 from transactions.service import record_sale, record_sales_return
 from utils.currency import format_naira, to_kobo
 from utils.receipt_images import optimize_receipt_image
@@ -14,6 +22,8 @@ def render():
     st.caption("Choose how the customer paid. Credit sales add to money customers owe you.")
     db = session()
     try:
+        sale_key = action_idempotency_key("sale")
+        return_key = action_idempotency_key("sales_return")
         receipt = st.session_state.get("last_receipt")
         if receipt:
             st.download_button(
@@ -39,7 +49,11 @@ def render():
                     key=f"sale_product_{index}",
                 )
                 quantity = qty_col.number_input(
-                    "Quantity", min_value=1, value=1, step=1,
+                    "Quantity",
+                    min_value=0.001 if product and product.unit.lower() in WEIGHT_UNITS else 1,
+                    value=1.0 if product and product.unit.lower() in WEIGHT_UNITS else 1,
+                    step=0.001 if product and product.unit.lower() in WEIGHT_UNITS else 1,
+                    format="%.3f" if product and product.unit.lower() in WEIGHT_UNITS else "%d",
                     key=f"sale_quantity_{index}",
                 )
                 suggested = product.selling_price_kobo / 100 if product else 0.0
@@ -48,10 +62,23 @@ def render():
                     key=f"sale_price_{index}_{product.id if product else 'none'}",
                 )
                 if product is not None:
-                    items.append((product, int(quantity), to_kobo(price)))
-            method = st.selectbox("Customer paid by", ["cash", "bank", "pos", "credit"],
+                    items.append((product, quantity, to_kobo(price)))
+            method = st.selectbox("Customer paid by", ["cash", "bank", "pos", "credit", "split"],
                                   format_func=lambda x: {"cash": "Cash", "bank": "Bank transfer",
-                                                        "pos": "POS", "credit": "Pay later"}[x])
+                                                        "pos": "POS", "credit": "Pay later",
+                                                        "split": "Split payment"}[x])
+            split_payments = []
+            if method == "split":
+                st.caption("Enter the amount received by each method. The amounts must equal the sale total.")
+                for split_method in ("cash", "bank", "pos", "credit"):
+                    split_amount = st.number_input(
+                        f"{split_method.title()} portion (₦)",
+                        min_value=0.0,
+                        step=500.0,
+                        key=f"sale_split_{split_method}",
+                    )
+                    if split_amount > 0:
+                        split_payments.append((split_method, to_kobo(split_amount)))
             receipt_upload = st.file_uploader(
                 "Receipt photo (optional)", type=["jpg", "jpeg", "png"],
                 key="sale_receipt",
@@ -68,6 +95,8 @@ def render():
                         db, current_business_id(), items, method, customer.strip(),
                         optimize_receipt_image(receipt_upload.getvalue()) if receipt_upload else None,
                         receipt_upload.name if receipt_upload else "",
+                        split_payments=split_payments,
+                        idempotency_key=sale_key,
                     )
                     receipt_rows = [
                         ["Item", "Quantity", "Unit price", "Amount"],
@@ -93,12 +122,14 @@ def render():
                         ),
                     }
                     db.commit()
+                    rotate_action_idempotency_key("sale")
                     st.success(
                         f"Sale saved. Reference: {result.reference}. "
                         "Stock and cost of goods sold were updated."
                     )
                 except ValueError as exc:
                     db.rollback()
+                    rotate_action_idempotency_key("sale")
                     st.error(str(exc))
         with st.expander("Saved sales receipt photos"):
             show_receipt_gallery(db, ("sale",), "sales_receipt_gallery")
@@ -108,6 +139,7 @@ def render():
             select(Transaction).where(
                 Transaction.business_id == current_business_id(),
                 Transaction.transaction_type == "sale",
+                Transaction.status == "posted",
             ).order_by(Transaction.transaction_date.desc())
         ))
         if not sales:
@@ -126,22 +158,35 @@ def render():
                 ))
                 selected_item = st.selectbox(
                     "Returned product", items,
-                    format_func=lambda row: row.description,
+                    format_func=lambda row: (
+                        f"{row.description} · {row.quantity} · "
+                        f"{format_naira(row.total_kobo, kobo=True)}"
+                    ),
                 )
-                count = st.number_input("Quantity returned", min_value=1, value=1, step=1)
+                selected_product = db.get(Product, selected_item.product_id)
+                fractional = selected_product.unit.lower() in WEIGHT_UNITS
+                count = st.number_input(
+                    "Quantity returned",
+                    min_value=0.001 if fractional else 1,
+                    value=1.0 if fractional else 1,
+                    step=0.001 if fractional else 1,
+                    format="%.3f" if fractional else "%d",
+                )
                 reason = st.text_input("Reason")
                 refund = st.selectbox("Refund method", ["cash", "bank", "pos"])
                 return_submitted = st.form_submit_button("Save sales return")
             if return_submitted:
-                product = db.get(Product, selected_item.product_id)
                 try:
                     result = record_sales_return(
-                        db, current_business_id(), sale, product, int(count), refund, reason
+                        db, current_business_id(), sale, selected_item, count, refund, reason,
+                        idempotency_key=return_key,
                     )
                     db.commit()
+                    rotate_action_idempotency_key("sales_return")
                     st.success(f"Return recorded: {result.reference}")
                 except ValueError as exc:
                     db.rollback()
+                    rotate_action_idempotency_key("sales_return")
                     st.error(str(exc))
     finally:
         db.close()

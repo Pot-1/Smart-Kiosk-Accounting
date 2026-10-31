@@ -62,7 +62,10 @@ def render():
                 name = st.text_input("Product name")
                 sku = st.text_input("SKU / product code")
                 category_name = st.text_input("Category", value="General")
-                unit = st.selectbox("Sold by", ["pieces", "kg", "cartons", "packs", "bags"])
+                unit = st.selectbox(
+                    "Sold by",
+                    ["pieces", "cartons", "packs", "kg", "grams", "bags"],
+                )
                 price = st.number_input("Selling price (₦)", min_value=0.0, step=100.0)
                 reorder = st.number_input("Remind me when stock reaches", min_value=0, value=5)
                 submitted = st.form_submit_button("Add product", type="primary")

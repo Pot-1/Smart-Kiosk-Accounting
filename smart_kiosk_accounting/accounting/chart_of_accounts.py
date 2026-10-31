@@ -8,6 +8,7 @@ DEFAULT_ACCOUNTS = (
     ("3100", "Owner drawings", "equity"),
     ("4000", "Sales income", "revenue"),
     ("4100", "Sales returns", "revenue"),
+    ("4090", "Inventory return gains", "revenue"),
     ("5000", "Cost of goods sold", "expense"),
     ("6000", "Operating expenses", "expense"),
     ("6010", "Stock losses", "expense"),

@@ -17,6 +17,7 @@ def daily_totals(session, business_id: int, day=None):
                 select(func.coalesce(func.sum(Transaction.total_kobo), 0)).where(
                     Transaction.business_id == business_id,
                     Transaction.transaction_type == kind,
+                    Transaction.status == "posted",
                     Transaction.transaction_date >= start,
                     Transaction.transaction_date < end,
                 )
