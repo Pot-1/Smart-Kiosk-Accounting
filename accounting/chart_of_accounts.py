@@ -1,0 +1,14 @@
+DEFAULT_ACCOUNTS = (
+    ("1010", "Cash on hand", "asset"),
+    ("1020", "Bank and POS", "asset"),
+    ("1100", "Money customers owe (receivables)", "asset"),
+    ("1200", "Inventory", "asset"),
+    ("2000", "Money owed to suppliers (payables)", "liability"),
+    ("3000", "Owner capital", "equity"),
+    ("3100", "Owner drawings", "equity"),
+    ("4000", "Sales income", "revenue"),
+    ("4100", "Sales returns", "revenue"),
+    ("5000", "Cost of goods sold", "expense"),
+    ("6000", "Operating expenses", "expense"),
+    ("6010", "Stock losses", "expense"),
+)
